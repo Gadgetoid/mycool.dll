@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: sh3
+            ce: 2
+          - arch: mips
+            ce: 2
+          - arch: arm
+            ce: 3
+    env:
+      GRIMACE_LLVM_RELEASE: v4
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake
+
+      - name: Download the Windows CE LLVM
+        run: |
+          name=llvm-$GRIMACE_LLVM_RELEASE-linux-x86_64
+          url=https://github.com/grimace-sdk/llvm-builds/releases/download/$GRIMACE_LLVM_RELEASE
+          curl -fsSLO $url/$name.tar.xz
+          curl -fsSLO $url/$name.tar.xz.sha256
+          shasum -a 256 -c $name.tar.xz.sha256
+          tar xf $name.tar.xz -C "$RUNNER_TEMP"
+          echo "GRIMACE_LLVM_ROOT=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
+
+      - name: Check out grimace
+        uses: actions/checkout@v7
+        with:
+          repository: grimace-sdk/grimace
+          path: grimace
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/grimace/cmake/toolchain.cmake" \
+            -DGRIMACE_ARCH=${{ matrix.arch }} \
+            -DGRIMACE_CE_VERSION=${{ matrix.ce }}
+
+      - name: Build and package
+        run: |
+          cmake --build build
+          cmake --build build --target packages
+          ls build/packages
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mycool-${{ matrix.arch }}-ce${{ matrix.ce }}
+          path: |
+            build/mycool.dll
+            build/packages/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(find artifacts -type f -path '*/packages/*')
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            $files
